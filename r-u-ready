@@ -1,0 +1,152 @@
+#!/bin/sh
+
+TIMEOUT=15
+QUIET=0
+HOST="127.0.0.1"
+
+echoerr() {
+  if [ "$QUIET" -ne 1 ]; then printf "%s\n" "$*" 1>&2; fi
+}
+
+usage() {
+  exitcode="$1"
+  cat << USAGE >&2
+Usage:
+  $cmdname service [-h host] [-P port] [-u username] [-p password] [-t timeout] [-- command args]
+
+  service REQUIRED                    pgsql | mysql | web
+
+  -h HOST | --host=HOST               Domain/IP host (default: 127.0.0.1)
+  -P PORT | --port=PORT               Port (default: 5432 for psql, 3306 for mysql, 80 for web)
+
+  -u USERNAME | --username=USERNAME   MySQL username (required for mysql only)
+  -p PASSWORD | --password=PASSWORD   MySQL password for the given username (required for mysql only)
+
+  -q | --quiet                        Do not output any status messages
+  -t TIMEOUT | --timeout=TIMEOUT      Timeout in seconds, zero for no timeout (default: 15 seconds)
+  -- COMMAND ARGS                     Execute command with args after the test finishes
+USAGE
+  exit "$exitcode"
+}
+
+get_params() {
+  if [ "$SERVICE" = pgsql ]; then
+    if [ -z "$PORT" ]; then PORT=5432; fi
+    PARAMS="pg_isready -h ${HOST} -p ${PORT}"
+
+  elif [ "$SERVICE" = mysql ]; then
+    if [ -z "$PORT" ]; then PORT=3306; fi
+    PARAMS="mysqladmin ping -h ${HOST} -P ${PORT} -u ${USERNAME} -p${PASSWORD}"
+
+  else
+    if [ -z "$PORT" ]; then PORT=80; fi
+    PARAMS="curl ${HOST}:${PORT} --connect-timeout 1"
+  fi
+
+  echo $PARAMS
+}
+
+wait_for() {
+  echo "Waiting for ${SERVICE} server at ${HOST}:${PORT} to be ready..."
+
+  for i in `seq $TIMEOUT` ; do
+    eval $(get_params) > /dev/null 2>&1
+
+    result=$?
+    if [ $result -eq 0 ] ; then
+      echo "${SERVICE} server at ${HOST}:${PORT} is ready for connection"
+      if [ $# -gt 0 ] ; then
+        exec "$@"
+      fi
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "Operation timed out" >&2
+  exit 1
+}
+
+while [ $# -gt 0 ]
+do
+  case "$1" in
+    pgsql | mysql | web)
+      SERVICE=$1
+      if [ "$SERVICE" = "" ]; then break; fi
+      shift 1
+    ;;
+    -h)
+      HOST="$2"
+      if [ "$HOST" = "" ]; then break; fi
+      shift 2
+    ;;
+    --host=*)
+      HOST="${1#*=}"
+      shift 1
+    ;;
+    -P)
+      PORT="$2"
+      if [ "$PORT" = "" ]; then break; fi
+      shift 2
+    ;;
+    --port=*)
+      PORT="${1#*=}"
+      shift 1
+    ;;
+    -u)
+      USERNAME="$2"
+      if [ "$USERNAME" = "" ]; then break; fi
+      shift 2
+    ;;
+      --username=*)
+      USERNAME="${1#*=}"
+      shift 1
+    ;;
+    -p)
+      PASSWORD="$2"
+      if [ "$PASSWORD" = "" ]; then break; fi
+      shift 2
+    ;;
+      --password=*)
+      PASSWORD="${1#*=}"
+      shift 1
+    ;;
+      -q | --quiet)
+      QUIET=1
+      shift 1
+    ;;
+    -t)
+      TIMEOUT="$2"
+      if [ "$TIMEOUT" = "" ]; then break; fi
+      shift 2
+    ;;
+      --timeout=*)
+      TIMEOUT="${1#*=}"
+      shift 1
+    ;;
+    --)
+      shift
+      break
+    ;;
+    --help)
+      usage 0
+    ;;
+    *)
+      echoerr "Unknown argument: $1"
+      usage 1
+    ;;
+  esac
+done
+
+if [ "$SERVICE" = "" ]; then
+  echoerr "Error: you must provide a service name: pgsql | mysql | web"
+  usage 2
+fi
+
+if [ "$SERVICE" = mysql ]; then
+  if [ "$USERNAME" = "" ] || [ "$PASSWORD" = "" ]; then
+    echoerr "Error: you must provide username and password for mysql service"
+    usage 2
+  fi
+fi
+
+wait_for "$@"
